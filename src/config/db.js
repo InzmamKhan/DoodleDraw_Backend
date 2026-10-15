@@ -1,23 +1,21 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
+const isProduction = process.env.NODE_ENV === 'production';
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
-    rejectUnauthorized: false, 
+    rejectUnauthorized: false, // Required for Supabase connections
   },
-  max: 10,                 
-  idleTimeoutMillis: 30000,   
-  connectionTimeoutMillis: 5000,
 });
 
 pool.on('connect', () => {
-  console.log(' Connected to Supabase PostgreSQL database successfully');
+  console.log('Connected to PostgreSQL / Supabase database');
 });
 
 pool.on('error', (err) => {
-  console.error(' Unexpected error on idle database client:', err);
-  process.exit(-1);
+  console.error('Unexpected database error:', err);
 });
 
 module.exports = {
