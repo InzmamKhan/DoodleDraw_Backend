@@ -1,24 +1,13 @@
-const { Pool } = require('pg');
-require('dotenv').config();
+const mongoose = require('mongoose');
 
-const isProduction = process.env.NODE_ENV === 'production';
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false, // Required for Supabase connections
-  },
-});
-
-pool.on('connect', () => {
-  console.log('Connected to PostgreSQL / Supabase database');
-});
-
-pool.on('error', (err) => {
-  console.error('Unexpected database error:', err);
-});
-
-module.exports = {
-  query: (text, params) => pool.query(text, params),
-  pool,
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(process.env.DATABASE_URL);
+    console.log(`MongoDB Connected: ${conn.connection.host}`);
+  } catch (error) {
+    console.error(`MongoDB Connection Error: ${error.message}`);
+    process.exit(1);
+  }
 };
+
+module.exports = connectDB;
