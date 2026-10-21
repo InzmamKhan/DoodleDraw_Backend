@@ -19,7 +19,6 @@ const createRoom = async (req, res) => {
     let isUnique = false;
     let attempts = 0;
 
-    // Ensure room code uniqueness
     while (!isUnique && attempts < 10) {
       const existing = await Room.findOne({ code: roomCode });
       if (!existing) {
