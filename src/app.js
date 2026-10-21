@@ -17,7 +17,7 @@ app.use(express.json());
 app.use(cookieParser());
 
 app.use('/api/auth', authRoutes);
-app.use('/api/room', roomRoutes);
+app.use('/api/rooms', roomRoutes);
 
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'Backend server is active.' });
