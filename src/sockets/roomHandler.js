@@ -1,4 +1,4 @@
-const db = require('../config/db');
+const Room = require('../models/Room');
 
 const activeRooms = new Map();
 const roomTeardownTimers = new Map();
@@ -6,17 +6,16 @@ const roomTeardownTimers = new Map();
 const handleRoomEvents = (io, socket) => {
   socket.on('join_room', async ({ roomCode, userId, username }) => {
     try {
-      const roomResult = await db.query('SELECT * FROM rooms WHERE room_code = $1 AND is_active = TRUE', [roomCode]);
-      if (roomResult.rows.length === 0) {
+      // Find room in MongoDB
+      const room = await Room.findOne({ code: roomCode.toUpperCase() });
+      if (!room) {
         return socket.emit('error_message', 'Room does not exist or has ended.');
       }
-
-      const room = roomResult.rows[0];
 
       if (!activeRooms.has(roomCode)) {
         activeRooms.set(roomCode, {
           roomId: room.id,
-          hostUserId: room.host_user_id,
+          hostUserId: room.created_by ? room.created_by.toString() : null,
           users: new Map(),
           canvasState: [],
         });
@@ -39,14 +38,6 @@ const handleRoomEvents = (io, socket) => {
       socket.roomCode = roomCode;
       socket.userId = userId;
 
-      await db.query(
-        `INSERT INTO room_members (room_id, user_id, last_seen_at) 
-         VALUES ($1, $2, NOW()) 
-         ON CONFLICT (room_id, user_id) 
-         DO UPDATE SET last_seen_at = NOW()`,
-        [room.id, userId]
-      );
-
       const userList = Array.from(activeRoom.users.values());
       io.to(roomCode).emit('user_joined', {
         users: userList,
@@ -55,6 +46,7 @@ const handleRoomEvents = (io, socket) => {
 
       socket.emit('init_canvas_state', activeRoom.canvasState);
     } catch (error) {
+      console.error('Join Room Socket Error:', error);
       socket.emit('error_message', 'Failed to join room.');
     }
   });
@@ -98,18 +90,6 @@ const handleUserDisconnect = (io, socket) => {
       const timer = setTimeout(async () => {
         io.to(roomCode).emit('room_destroyed', 'Room closed.');
         io.in(roomCode).socketsLeave(roomCode);
-
-        try {
-          await db.query('UPDATE rooms SET is_active = FALSE WHERE id = $1', [activeRoom.roomId]);
-          if (activeRoom.canvasState.length > 0) {
-            await db.query(
-              'INSERT INTO canvas_states (room_id, state_data) VALUES ($1, $2)',
-              [activeRoom.roomId, JSON.stringify(activeRoom.canvasState)]
-            );
-          }
-        } catch (err) {
-          console.error(err);
-        }
 
         activeRooms.delete(roomCode);
         roomTeardownTimers.delete(roomCode);
