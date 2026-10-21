@@ -1,19 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const {
-  createRoom,
-  getPublicRooms,
-  joinRoom,
-  getRoomByCode,
-} = require('../controllers/roomController');
-const authMiddleware = require('../middleware/authMiddleware');
+  signup,
+  login,
+  getCurrentUser,
+  logout,
+} = require('../controllers/authController');
+const { verifyToken } = require('../middleware/authMiddleware');
 
-// Public routes
-router.get('/public', getPublicRooms);
-router.get('/:code', getRoomByCode);
-
-// Protected routes (require authentication)
-router.post('/create', authMiddleware, createRoom);
-router.post('/join', authMiddleware, joinRoom);
+router.post('/signup', signup);
+router.post('/login', login);
+router.get('/me', verifyToken, getCurrentUser);
+router.post('/logout', logout);
 
 module.exports = router;
