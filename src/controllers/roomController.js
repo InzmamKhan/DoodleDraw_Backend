@@ -1,132 +1,167 @@
-const db = require('../config/db');
+const Room = require('../models/Room');
+const User = require('../models/User');
 const { hashPassword, comparePassword } = require('../utils/passwordHasher');
-const { generateRoomCode, generateAutoPassword } = require('../utils/codeGenerator');
+const crypto = require('crypto');
+
+const generateRoomCode = () => {
+  return crypto.randomBytes(3).toString('hex').toUpperCase();
+};
 
 const createRoom = async (req, res) => {
-  const { roomName, customPassword, autoGeneratePassword } = req.body;
-  const hostUserId = req.user.id;
+  const { name, isPublic = true, password, securityType = 'public' } = req.body;
 
-  if (!roomName) {
+  if (!name || name.trim() === '') {
     return res.status(400).json({ message: 'Room name is required.' });
-  }
-
-  let plainPassword = null;
-  if (autoGeneratePassword) {
-    plainPassword = generateAutoPassword();
-  } else if (customPassword) {
-    plainPassword = customPassword;
   }
 
   try {
     let roomCode = generateRoomCode();
-    let codeExists = await db.query('SELECT id FROM rooms WHERE room_code = $1', [roomCode]);
+    let isUnique = false;
+    let attempts = 0;
 
-    while (codeExists.rows.length > 0) {
-      roomCode = generateRoomCode();
-      codeExists = await db.query('SELECT id FROM rooms WHERE room_code = $1', [roomCode]);
+    // Ensure room code uniqueness
+    while (!isUnique && attempts < 10) {
+      const existing = await Room.findOne({ code: roomCode });
+      if (!existing) {
+        isUnique = true;
+      } else {
+        roomCode = generateRoomCode();
+        attempts++;
+      }
     }
 
-    const hashedPassword = plainPassword ? await hashPassword(plainPassword) : null;
+    let passwordHash = null;
+    let autoPassword = null;
+    let finalIsPublic = isPublic;
 
-    const newRoom = await db.query(
-      'INSERT INTO rooms (room_code, room_name, password_hash, host_user_id) VALUES ($1, $2, $3, $4) RETURNING id, room_code, room_name, created_at, is_active',
-      [roomCode, roomName, hashedPassword, hostUserId]
-    );
+    if (securityType === 'auto') {
+      autoPassword = crypto.randomBytes(4).toString('hex');
+      passwordHash = await hashPassword(autoPassword);
+      finalIsPublic = false;
+    } else if (securityType === 'custom' || (!isPublic && password)) {
+      if (!password || password.trim() === '') {
+        return res.status(400).json({ message: 'Password is required for private rooms.' });
+      }
+      passwordHash = await hashPassword(password);
+      finalIsPublic = false;
+    }
 
-    const room = newRoom.rows[0];
+    const newRoom = await Room.create({
+      name: name.trim(),
+      code: roomCode,
+      is_public: finalIsPublic,
+      password_hash: passwordHash,
+      created_by: req.user.id,
+    });
 
     return res.status(201).json({
+      message: 'Room created successfully',
       room: {
-        id: room.id,
-        roomCode: room.room_code,
-        roomName: room.room_name,
-        hasPassword: Boolean(hashedPassword),
-        plainPassword: plainPassword,
-        hostUserId: hostUserId,
-        createdAt: room.created_at,
+        id: newRoom.id,
+        name: newRoom.name,
+        code: newRoom.code,
+        is_public: newRoom.is_public,
+        created_at: newRoom.created_at,
+        autoPassword: autoPassword || undefined,
       },
     });
   } catch (error) {
+    console.error('Create Room Error:', error);
     return res.status(500).json({ message: 'Internal server error creating room.' });
   }
 };
 
-const verifyRoomAccess = async (req, res) => {
-  const { roomCode, password } = req.body;
+const getPublicRooms = async (req, res) => {
+  try {
+    const rooms = await Room.find({ is_public: true })
+      .populate('created_by', 'username email')
+      .sort({ created_at: -1 })
+      .limit(50);
 
-  if (!roomCode) {
+    const formattedRooms = rooms.map((room) => ({
+      id: room.id,
+      name: room.name,
+      code: room.code,
+      is_public: room.is_public,
+      created_at: room.created_at,
+      host: room.created_by ? room.created_by.username : 'Unknown',
+    }));
+
+    return res.status(200).json({ rooms: formattedRooms });
+  } catch (error) {
+    console.error('Get Public Rooms Error:', error);
+    return res.status(500).json({ message: 'Internal server error fetching rooms.' });
+  }
+};
+
+const joinRoom = async (req, res) => {
+  const { code, password } = req.body;
+
+  if (!code) {
     return res.status(400).json({ message: 'Room code is required.' });
   }
 
   try {
-    const roomResult = await db.query('SELECT * FROM rooms WHERE room_code = $1 AND is_active = TRUE', [roomCode]);
-
-    if (roomResult.rows.length === 0) {
-      return res.status(404).json({ message: 'Room not found or inactive.' });
+    const room = await Room.findOne({ code: code.toUpperCase() }).populate('created_by', 'username');
+    if (!room) {
+      return res.status(404).json({ message: 'Room not found.' });
     }
 
-    const room = roomResult.rows[0];
-
-    if (room.password_hash) {
+    if (!room.is_public && room.password_hash) {
       if (!password) {
         return res.status(401).json({ message: 'Password required for this room.', requiresPassword: true });
       }
 
-      const isPasswordValid = await comparePassword(password, room.password_hash);
-      if (!isPasswordValid) {
-        return res.status(401).json({ message: 'Incorrect room password.', requiresPassword: true });
+      const isMatch = await comparePassword(password, room.password_hash);
+      if (!isMatch) {
+        return res.status(401).json({ message: 'Invalid room password.' });
       }
     }
 
     return res.status(200).json({
-      success: true,
+      message: 'Joined room successfully',
       room: {
         id: room.id,
-        roomCode: room.room_code,
-        roomName: room.room_name,
-        hostUserId: room.host_user_id,
+        name: room.name,
+        code: room.code,
+        is_public: room.is_public,
+        host: room.created_by ? room.created_by.username : 'Unknown',
       },
     });
   } catch (error) {
-    return res.status(500).json({ message: 'Internal server error verifying room access.' });
+    console.error('Join Room Error:', error);
+    return res.status(500).json({ message: 'Internal server error joining room.' });
   }
 };
 
-const getRoomDetails = async (req, res) => {
-  const { roomCode } = req.params;
+const getRoomByCode = async (req, res) => {
+  const { code } = req.params;
 
   try {
-    const roomResult = await db.query(
-      `SELECT r.id, r.room_code, r.room_name, r.host_user_id, r.is_active, r.password_hash, u.username as host_name 
-       FROM rooms r 
-       LEFT JOIN users u ON r.host_user_id = u.id 
-       WHERE r.room_code = $1 AND r.is_active = TRUE`,
-      [roomCode]
-    );
-
-    if (roomResult.rows.length === 0) {
-      return res.status(404).json({ message: 'Room not found or inactive.' });
+    const room = await Room.findOne({ code: code.toUpperCase() }).populate('created_by', 'username');
+    if (!room) {
+      return res.status(404).json({ message: 'Room not found.' });
     }
-
-    const room = roomResult.rows[0];
 
     return res.status(200).json({
       room: {
         id: room.id,
-        roomCode: room.room_code,
-        roomName: room.room_name,
-        hostUserId: room.host_user_id,
-        hostName: room.host_name,
-        hasPassword: Boolean(room.password_hash),
+        name: room.name,
+        code: room.code,
+        is_public: room.is_public,
+        hasPassword: !!room.password_hash,
+        host: room.created_by ? room.created_by.username : 'Unknown',
       },
     });
   } catch (error) {
+    console.error('Get Room Details Error:', error);
     return res.status(500).json({ message: 'Internal server error fetching room details.' });
   }
 };
 
 module.exports = {
   createRoom,
-  verifyRoomAccess,
-  getRoomDetails,
+  getPublicRooms,
+  joinRoom,
+  getRoomByCode,
 };
